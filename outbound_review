@@ -1,0 +1,162 @@
+<form>
+  <!--punch list 
+  drilldown by host
+  when sip more than 4 so something with client
+  fing more use cases (MAC Address?)
+  roll up stats uptop
+  count domains by client/src_ip?
+  catigory static ips, dymanic ips, iot, personal devices, entertainment devices
+  -->
+  <label>outbound_review</label>
+  <description>Looking at outbound traffic for the IoT stuff</description>
+  <search id="base2ld">
+    <query>
+      <!--index=main sourcetype="stream:dns" -->
+      index="suricata" sourcetype="*json"  
+      event_type=dns src_ip=192.168.0.0/24 
+dns.rrname!="*in-addr.arpa"
+| rex "(?i)\..*?\.(?P&lt;twold&gt;[a-zz0-9#\-]+\.[a-z]+)(?=\")" 
+
+    </query>
+    <earliest>$timepick.earliest$</earliest>
+    <latest>$timepick.latest$</latest>
+    <sampleRatio>1</sampleRatio>
+  </search>
+  <fieldset submitButton="false">
+    <input type="time" token="timepick" searchWhenChanged="true">
+      <label></label>
+      <default>
+        <earliest>-4h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+    <input type="dropdown" token="orig_tok" searchWhenChanged="true">
+      <label>Select System</label>
+      <default>*</default>
+      <fieldForLabel>originator</fieldForLabel>
+      <fieldForValue>originator</fieldForValue>
+      <search base="base2ld">
+        <query>
+          
+|lookup inventory_static.csv ip as src_ip output client 
+|lookup inventory_all.csv ip as src_ip outputnew client 
+|lookup inventory_dhcp.csv ip as src_ip outputnew client 
+| lookup mac_tracking.csv ip as src_ip outputnew client  
+|eval originator=lower(client)
+|dedup originator
+|sort + originator
+|table originator 
+
+        </query>
+      </search>
+    </input>
+    <input type="dropdown" token="type_tok" searchWhenChanged="true">
+      <label>Select Type</label>
+      <default>*</default>
+      <fieldForLabel>type</fieldForLabel>
+      <fieldForValue>type</fieldForValue>
+      <search base="base2ld">
+        <query>
+|lookup inventory_static.csv ip as src_ip output  type as type
+|lookup inventory_dhcp.csv ip as src_ip output  type as typed
+| lookup mac_tracking.csv ip as src_ip outputnew type
+| fillnull value="ui", typed, type
+|eval type=coalesce(typed,type,"ui")
+|dedup type
+|sort type
+|table type
+        </query>
+      </search>
+    </input>
+    <input type="text" token="tld" searchWhenChanged="true">
+      <label>And/Or Second Level Domain</label>
+      <default>*</default>
+    </input>
+    
+     <input type="checkbox" token="multi" searchWhenChanged="true">
+        <label>multi-ip</label>
+        <choice value="set">filter out multi-ip</choice>
+        <delimiter> </delimiter>
+        <change>
+          <condition value="set">
+            <set token="multi_tok">type!="multi-ip"</set>
+          </condition>
+          <condition>
+            <set token="multi_tok"> </set>          
+          </condition>
+        </change>        
+      </input>
+    
+    
+  </fieldset>
+  <row depends="$neversh$">
+    <panel>
+      <table>
+        <search base="base2ld">
+          <query>
+          |stats dc(twold) as twoldc dc(src_ip) as sipc count
+          </query>
+          <done>
+            <set token="2ldcount">$result.twoldc$</set>
+            <set token="eventcount">$result.count$</set>
+            <set token="sip_count">$result.sipc$</set>
+          </done>
+        </search>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>2ndLevelDomainStats</title>
+      <html>In the time frame selected, $sip_count$ source IPs went to $2ldcount$ second level domains after $eventcount$ dns lookups for that(those) 2d level domain(s)
+      <br/>Filtered for host:$orig_tok$ and/or $type_tok$ $multi_tok$</html>
+      <table>
+        <search base="base2ld">
+          <query>
+
+|stats dc(src_ip) as sipc values(src_ip) as sipv sparkline count by twold
+|eval sip=if(sipc&lt;5,sipv, sipc+" src_ips")
+|lookup inventory_all.csv ip as sip output client type
+|lookup mac_tracking.csv ip as sip outputnew client type
+|eval type=if(sipc&lt;5,type,"multi-ip")
+|fillnull value="ui", type
+|search client="*$orig_tok$*" OR sipv="$orig_tok$" twold="*$tld$*" type=$type_tok$ $multi_tok$
+|table twold, count sip client type sparkline
+|rename sip as src_ip, sipc as src_ip_count</query>
+        </search>
+        <drilldown>
+          <set token="twold_tok">$row.twold$</set>
+        </drilldown>
+        <option name="count">10</option>
+        <option name="dataOverlayMode">none</option>
+        <option name="drilldown">row</option>
+        <option name="percentagesRow">false</option>
+        <option name="rowNumbers">false</option>
+        <option name="totalsRow">false</option>
+        <option name="wrap">true</option>
+      </table>
+    </panel>
+  </row>
+  <row depends="$twold_tok$">
+    <panel>
+      <html>
+        <a href="https://www.google.com/search?q=$twold_tok$" target="_blank">click for google search for $twold_tok$</a>
+      </html>
+      <chart>
+        <title>chart for domain $twold_tok$</title>
+        <search base="base2ld">
+          <query>
+            |search twold=$twold_tok$
+            |lookup inventory_all.csv ip as src_ip output client
+            |eval source_id=coalesce(client,src_ip, 1=1,"error")
+          |timechart count by source_id
+          useother=f limit=0
+          </query>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.drilldown">none</option>
+      </chart>
+    </panel>
+  </row>
+</form>
